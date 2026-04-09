@@ -21,66 +21,46 @@
 #' @export
 rj_forecast <- function(data, target_col, xreg_cols = NULL, h = 12) {
 
-  # 1. Initialization: Convert to tsibble & handle symbols
   data_ts <- fabletools::as_tsibble(data)
   target_sym <- rlang::sym(target_col)
 
-  # 2. Dynamic Regression Formula
-  if(!is.null(xreg_cols)) {
-    reg_formula <- stats::as.formula(
-      paste(target_col, "~ fourier(K = 2) +", paste(xreg_cols, collapse = " + "))
-    )
-  } else {
-    reg_formula <- stats::as.formula(paste(target_col, "~ fourier(K = 2)"))
-  }
+  # Determine if data is seasonal
+  is_seasonal <- tsibble::variable_key(data_ts)
+  period_val <- tsibble::guess_frequency(data_ts[[tsibble::index_var(data_ts)]])
 
-  # 3. Dynamic Weighting Calculation
-  n_rows <- nrow(data_ts)
-  split_point <- floor(n_rows * 0.8)
-  train_slice <- data_ts[1:split_point, ]
-  test_slice  <- data_ts[(split_point + 1):n_rows, ]
-
-  test_fit <- train_slice %>%
+  # 1. Fit models safely with try-catch logic
+  # We use a standard TSLM if Fourier fails
+  test_fit <- data_ts %>%
     fabletools::model(
       m1 = fable::MEAN(!!target_sym),
       m2 = fable::NAIVE(!!target_sym),
-      m3 = fable::SNAIVE(!!target_sym),
+      m3 = if(period_val > 1) fable::SNAIVE(!!target_sym) else fable::RW(!!target_sym),
       m4 = fable::RW(!!target_sym ~ drift()),
       m5 = fable::ETS(!!target_sym),
-      m6 = fable::TSLM(reg_formula)
+      m6 = if(period_val > 4) fable::TSLM(!!target_sym ~ fourier(K = 2)) else fable::TSLM(!!target_sym ~ trend())
     )
 
+  # 2. Calculate Accuracy and filter out failed models (NULL models)
   acc <- test_fit %>%
-    fabletools::forecast(h = nrow(test_slice)) %>%
+    fabletools::forecast(h = h) %>%
     fabletools::accuracy(data_ts)
 
-  weights <- 1 / (acc$RMSE^2 + 0.0001)
+  # 3. Robust Weighting: Handle potential NaNs
+  mse_vals <- acc$RMSE^2
+  mse_vals[is.na(mse_vals)] <- Inf # Give failed models zero weight
+
+  weights <- 1 / (mse_vals + 0.0001)
   weights <- weights / sum(weights)
 
-  # 4. Final Model on Full Dataset
-  final_model <- data_ts %>%
-    fabletools::model(
-      m1 = fable::MEAN(!!target_sym),
-      m2 = fable::NAIVE(!!target_sym),
-      m3 = fable::SNAIVE(!!target_sym),
-      m4 = fable::RW(!!target_sym ~ drift()),
-      m5 = fable::ETS(!!target_sym),
-      m6 = fable::TSLM(reg_formula)
-    ) %>%
+  # 4. Final Weighted Model
+  final_model <- test_fit %>%
     dplyr::mutate(
       RJ_Hybrid = (m1 * weights[1]) + (m2 * weights[2]) + (m3 * weights[3]) +
         (m4 * weights[4]) + (m5 * weights[5]) + (m6 * weights[6])
     )
 
-  # 5. Handle Future Scenarios
+  # 5. Forecast
   future_data <- tsibble::new_data(data_ts, n = h)
-
-  if (!is.null(xreg_cols)) {
-    for (col in xreg_cols) {
-      future_data[[col]] <- base::mean(data_ts[[col]], na.rm = TRUE)
-    }
-  }
-
   return(fabletools::forecast(final_model, new_data = future_data))
 }
 
