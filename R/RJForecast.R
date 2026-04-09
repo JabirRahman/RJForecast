@@ -19,14 +19,14 @@
 #' @import fable
 #'
 #' @export
+# Define the fixed function directly in your script
 rj_forecast <- function(data, target_col, xreg_cols = NULL, h = 12) {
   
-  # Ensure it's a tsibble
+  # Ensure data is a tsibble
   data_ts <- if(!tsibble::is_tsibble(data)) tsibble::as_tsibble(data) else data
   target_sym <- rlang::sym(target_col)
   
-  # Replacement for variable_key: Get the frequency of the time index
-  # This tells us if it's Weekly (52), Quarterly (4), or Annual (1)
+  # ROBUST FREQUENCY CHECK (Replaces the broken variable_key)
   idx_var <- tsibble::index_var(data_ts)
   period_val <- tsibble::guess_frequency(data_ts[[idx_var]])
 
@@ -38,13 +38,13 @@ rj_forecast <- function(data, target_col, xreg_cols = NULL, h = 12) {
       m3 = if(period_val > 1) fable::SNAIVE(!!target_sym) else fable::RW(!!target_sym),
       m4 = fable::RW(!!target_sym ~ drift()),
       m5 = fable::ETS(!!target_sym),
-      m6 = if(period_val > 4) fable::TSLM(!!target_sym ~ fourier(K = 1)) else fable::TSLM(!!target_sym ~ trend())
+      m6 = if(period_val > 4) fable::TSLM(!!target_sym ~ trend()) else fable::TSLM(!!target_sym ~ trend())
     )
 
-  # 2. Accuracy check for weights (Training set)
+  # 2. Accuracy check for weights
   acc <- test_fit %>% fabletools::accuracy()
   
-  # 3. Robust Weighting
+  # 3. Weighting Logic (Handling failures)
   mse_vals <- acc$RMSE^2
   mse_vals[is.na(mse_vals)] <- Inf 
   
