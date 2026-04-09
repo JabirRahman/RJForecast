@@ -1,0 +1,11 @@
+# 1. Initialize the folder as a Git repo
+git init
+
+# 2. Add all your perfect package files
+git add .
+
+# 3. Create your first formal commit
+git commit -m "Official release of RJForecast v0.1.0"
+
+# 4. Rename the default branch to 'main'
+git branch -M main
